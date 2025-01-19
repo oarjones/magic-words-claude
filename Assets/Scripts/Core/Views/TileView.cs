@@ -1,31 +1,86 @@
 ﻿using UnityEngine;
 using TMPro;
 using DG.Tweening;
+using MagicWords.Core.Config;
+using MagicWords.Core.Board;
 
 namespace MagicWords.Core.Views
 {
+    [RequireComponent(typeof(Tile))]
     public class TileView : MonoBehaviour
     {
-        [Header("References")]
+        [Header("Components")]
         [SerializeField] private SpriteRenderer backgroundRenderer;
         [SerializeField] private TextMeshPro letterText;
         [SerializeField] private ParticleSystem selectionParticles;
         [SerializeField] private ParticleSystem freezeParticles;
         [SerializeField] private ParticleSystem highlightParticles;
 
-        [Header("Visual Settings")]
-        [SerializeField] private Color normalColor = Color.white;
-        [SerializeField] private Color selectedColor;
-        [SerializeField] private Color frozenColor;
-        [SerializeField] private Color objectiveColor;
+        [Header("Configuration")]
+        [SerializeField] private TileVisualConfig visualConfig;
 
         private Vector3 originalScale;
         private Sequence currentAnimation;
+        private TileState currentState;
 
         private void Awake()
         {
+            if (visualConfig == null)
+            {
+                visualConfig = Resources.Load<TileVisualConfig>("Configs/TileVisualConfig");
+                if (visualConfig == null)
+                {
+                    Debug.LogError("TileVisualConfig not found!");
+                    return;
+                }
+            }
+
             originalScale = transform.localScale;
+            SetupComponents();
             StopAllParticles();
+        }
+
+        private void SetupComponents()
+        {
+            if (backgroundRenderer != null)
+            {
+                backgroundRenderer.sortingOrder = visualConfig.backgroundSortingOrder;
+                backgroundRenderer.color = visualConfig.normalColor;
+            }
+
+            if (letterText != null)
+            {
+                letterText.sortingOrder = visualConfig.letterSortingOrder;
+                letterText.color = visualConfig.textColor;
+                letterText.fontSize = visualConfig.textSize;
+                letterText.transform.localPosition = new Vector3(
+                    letterText.transform.localPosition.x,
+                    visualConfig.textVerticalOffset,
+                    letterText.transform.localPosition.z
+                );
+            }
+
+            SetupParticleSystem(selectionParticles, visualConfig.selectionParticleRate);
+            SetupParticleSystem(freezeParticles, visualConfig.freezeParticleRate);
+            SetupParticleSystem(highlightParticles, visualConfig.highlightParticleRate);
+        }
+
+        private void SetupParticleSystem(ParticleSystem ps, float rate)
+        {
+            if (ps != null)
+            {
+                var main = ps.main;
+                main.simulationSpace = ParticleSystemSimulationSpace.World;
+
+                var emission = ps.emission;
+                emission.rateOverTime = rate;
+
+                var renderer = ps.GetComponent<ParticleSystemRenderer>();
+                if (renderer != null)
+                {
+                    renderer.sortingOrder = visualConfig.particleSortingOrder;
+                }
+            }
         }
 
         public void SetLetter(char letter)
@@ -36,13 +91,15 @@ namespace MagicWords.Core.Views
             }
         }
 
-        public void PlaySelectAnimation(float duration, float scaleMultiplier)
+        public void PlaySelectAnimation()
         {
             KillCurrentAnimation();
 
             currentAnimation = DOTween.Sequence()
-                .Append(transform.DOScale(originalScale * scaleMultiplier, duration))
-                .Join(backgroundRenderer.DOColor(selectedColor, duration))
+                .Append(transform.DOScale(originalScale * visualConfig.selectedScaleMultiplier,
+                    visualConfig.selectAnimationDuration))
+                .Join(backgroundRenderer.DOColor(visualConfig.selectedColor,
+                    visualConfig.selectAnimationDuration))
                 .SetEase(Ease.OutBack);
 
             if (selectionParticles != null)
@@ -51,13 +108,14 @@ namespace MagicWords.Core.Views
             }
         }
 
-        public void PlayDeselectAnimation(float duration)
+        public void PlayDeselectAnimation()
         {
             KillCurrentAnimation();
 
             currentAnimation = DOTween.Sequence()
-                .Append(transform.DOScale(originalScale, duration))
-                .Join(backgroundRenderer.DOColor(normalColor, duration))
+                .Append(transform.DOScale(originalScale, visualConfig.deselectAnimationDuration))
+                .Join(backgroundRenderer.DOColor(GetStateColor(currentState),
+                    visualConfig.deselectAnimationDuration))
                 .SetEase(Ease.OutQuad);
 
             if (selectionParticles != null)
@@ -66,34 +124,55 @@ namespace MagicWords.Core.Views
             }
         }
 
-        public void PlayInvalidAnimation(float duration, float intensity)
+        public void PlayInvalidAnimation()
         {
             KillCurrentAnimation();
 
             currentAnimation = DOTween.Sequence()
-                .Append(transform.DOShakePosition(duration, intensity))
-                .Join(backgroundRenderer.DOColor(Color.red, duration * 0.5f))
-                .Append(backgroundRenderer.DOColor(normalColor, duration * 0.5f));
+                .Append(transform.DOShakePosition(visualConfig.invalidAnimationDuration,
+                    visualConfig.invalidAnimationIntensity))
+                .Join(backgroundRenderer.DOColor(visualConfig.invalidColor,
+                    visualConfig.invalidAnimationDuration * 0.5f))
+                .Append(backgroundRenderer.DOColor(GetStateColor(currentState),
+                    visualConfig.invalidAnimationDuration * 0.5f));
         }
 
-        public void SetState(TileState state, float transitionDuration = 0.3f)
+        public void SetState(TileState state)
         {
-            Color targetColor = state switch
-            {
-                TileState.Normal => normalColor,
-                TileState.Selected => selectedColor,
-                TileState.Frozen => frozenColor,
-                TileState.Objective => objectiveColor,
-                _ => normalColor
-            };
+            currentState = state;
+            Color targetColor = GetStateColor(state);
 
-            backgroundRenderer.DOColor(targetColor, transitionDuration);
+            if (currentAnimation != null && currentAnimation.IsPlaying())
+            {
+                currentAnimation.OnComplete(() =>
+                {
+                    backgroundRenderer.DOColor(targetColor, visualConfig.selectAnimationDuration);
+                });
+            }
+            else
+            {
+                backgroundRenderer.DOColor(targetColor, visualConfig.selectAnimationDuration);
+            }
 
             UpdateParticles(state);
         }
 
+        private Color GetStateColor(TileState state)
+        {
+            return state switch
+            {
+                TileState.Normal => visualConfig.normalColor,
+                TileState.Selected => visualConfig.selectedColor,
+                TileState.Frozen => visualConfig.frozenColor,
+                TileState.Objective => visualConfig.objectiveColor,
+                _ => visualConfig.normalColor
+            };
+        }
+
         private void UpdateParticles(TileState state)
         {
+            StopAllParticles();
+
             switch (state)
             {
                 case TileState.Frozen:
@@ -101,9 +180,6 @@ namespace MagicWords.Core.Views
                     break;
                 case TileState.Objective:
                     if (highlightParticles != null) highlightParticles.Play();
-                    break;
-                default:
-                    StopAllParticles();
                     break;
             }
         }
